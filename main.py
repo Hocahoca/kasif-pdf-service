@@ -29,19 +29,85 @@ app = FastAPI(title="Kaşif PDF Kazıma Servisi")
 # ============================================
 # AYARLAR
 # ============================================
-MIN_TEXT_LENGTH_PER_PAGE = 30  # Bu karakterden azsa, sayfa "görüntü" sayılır -> OCR'a düşer
-OCR_LANGUAGES = "ara+tur"      # Tesseract dil paketleri: Arapça + Türkçe
+MIN_TEXT_LENGTH_PER_PAGE = 30   # Bu karakterden azsa, sayfa "görüntü" sayılır -> OCR'a düşer
+OCR_LANGUAGES = "ara+tur"       # Tesseract dil paketleri: Arapça + Türkçe
+DIACRITIC_RATIO_THRESHOLD = 0.12  # Bu orandan fazla harekeli karakter varsa, blok OCR'a yönlendirilir
+ARABIC_DIACRITICS = set(range(0x064B, 0x0653))  # Arapça hareke (tashkil) Unicode aralığı
+
+
+def diacritic_ratio(text: str) -> float:
+    """
+    Metindeki Arapça karakterler içinde hareke (tashkil) oranını hesaplar.
+    Yüksek oran (örn. ayet/hadis metni) -> PyMuPDF'in karakter sıralamasını
+    karıştırma riski yüksek -> bu bloğu OCR'a yönlendirmek daha güvenilir.
+    """
+    arabic_chars = [c for c in text if 0x0600 <= ord(c) <= 0x06FF]
+    if not arabic_chars:
+        return 0.0
+    diacritic_count = sum(1 for c in arabic_chars if ord(c) in ARABIC_DIACRITICS)
+    return diacritic_count / len(arabic_chars)
+
+
+def extract_block_image_text(page, bbox) -> str:
+    """
+    Sayfanın belirli bir bölgesini (bbox: bounding box) yüksek çözünürlüklü
+    görüntüye çevirip OCR ile okur. Harekeli/karmaşık dizgili Arapça metin
+    blokları için kullanılır - normal metin çıkarma yerine.
+    """
+    # Bölgeyi biraz genişletiyoruz (harekeler harfin biraz dışına taşabilir)
+    rect = fitz.Rect(bbox)
+    padded_rect = fitz.Rect(rect.x0 - 3, rect.y0 - 3, rect.x1 + 3, rect.y1 + 3)
+    pix = page.get_pixmap(clip=padded_rect, dpi=400)  # yüksek DPI, küçük bölge için
+    img_data = pix.tobytes("png")
+    image = Image.open(io.BytesIO(img_data))
+    text = pytesseract.image_to_string(image, lang=OCR_LANGUAGES)
+    return text.strip()
 
 
 def extract_text_normal(page) -> str:
     """
-    Dijital PDF sayfasından doğrudan metin çıkarır (hızlı yöntem).
-    sort=True: metin bloklarını sayfadaki konumlarına göre (yukarıdan aşağı,
-    sağdan sola/soldan sağa) yeniden sıralar. Bu, özellikle harekeli Arapça
-    metinlerde (Tefsir/Hadis kaynaklarında yaygın) karakter sırasının
-    karışmasını önemli ölçüde azaltır.
+    Dijital PDF sayfasından metni BLOK BAZINDA çıkarır. Her blok için hareke
+    yoğunluğuna bakılır:
+    - Düşük hareke oranı (düz Türkçe/Arapça metin) -> doğrudan metin kullanılır (hızlı, güvenilir)
+    - Yüksek hareke oranı (ayet/hadis gibi özel dizgili metin) -> o blok OCR'a yönlendirilir
+      (çünkü bu tür metinlerde PyMuPDF'in karakter sıralaması bozulabiliyor)
+    Bu karma yaklaşım, aynı sayfada hem düz açıklama hem alıntı ayet/hadis
+    bulunan (Tefsir/Hadis kaynaklarında çok yaygın) durumları doğru şekilde ele alır.
     """
-    return page.get_text("text", sort=True)
+    page_dict = page.get_text("dict", sort=True)
+    result_parts = []
+
+    for block in page_dict.get("blocks", []):
+        if block.get("type") != 0:  # 0 = metin bloğu, 1 = görüntü bloğu
+            continue
+
+        # Bloğun düz metnini topla (satırları birleştirerek)
+        block_lines = []
+        for line in block.get("lines", []):
+            line_text = "".join(span.get("text", "") for span in line.get("spans", []))
+            block_lines.append(line_text)
+        block_text = "\n".join(block_lines)
+
+        if not block_text.strip():
+            continue
+
+        ratio = diacritic_ratio(block_text)
+
+        if ratio >= DIACRITIC_RATIO_THRESHOLD:
+            # Harekeli/özel dizgili metin -> bu bloğu OCR ile yeniden oku
+            try:
+                ocr_text = extract_block_image_text(page, block["bbox"])
+                if ocr_text:  # OCR bir şey okuyabildiyse onu kullan
+                    result_parts.append(ocr_text)
+                else:  # OCR boş döndüyse, normal metne geri dön
+                    result_parts.append(block_text)
+            except Exception:
+                # OCR bir sebeple başarısız olursa, normal metne geri dön (veri kaybı olmasın)
+                result_parts.append(block_text)
+        else:
+            result_parts.append(block_text)
+
+    return "\n\n".join(result_parts)
 
 
 def extract_text_ocr(page) -> str:
