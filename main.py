@@ -140,8 +140,9 @@ async def process_pdf(file: UploadFile):
 
     pages_text = []
     pages_used_ocr = []
+    total_pages = len(doc)  # dokümanı kapatmadan önce sayfa sayısını kaydediyoruz
 
-    for page_num in range(len(doc)):
+    for page_num in range(total_pages):
         page = doc[page_num]
         text = extract_text_normal(page)
 
@@ -164,7 +165,7 @@ async def process_pdf(file: UploadFile):
     paragraphs = split_into_paragraphs(full_text)
 
     return JSONResponse({
-        "total_pages": len(doc),
+        "total_pages": total_pages,
         "pages_used_ocr": pages_used_ocr,
         "ocr_page_count": len(pages_used_ocr),
         "paragraph_count": len(paragraphs),
