@@ -34,8 +34,14 @@ OCR_LANGUAGES = "ara+tur"      # Tesseract dil paketleri: Arapça + Türkçe
 
 
 def extract_text_normal(page) -> str:
-    """Dijital PDF sayfasından doğrudan metin çıkarır (hızlı yöntem)."""
-    return page.get_text("text")
+    """
+    Dijital PDF sayfasından doğrudan metin çıkarır (hızlı yöntem).
+    sort=True: metin bloklarını sayfadaki konumlarına göre (yukarıdan aşağı,
+    sağdan sola/soldan sağa) yeniden sıralar. Bu, özellikle harekeli Arapça
+    metinlerde (Tefsir/Hadis kaynaklarında yaygın) karakter sırasının
+    karışmasını önemli ölçüde azaltır.
+    """
+    return page.get_text("text", sort=True)
 
 
 def extract_text_ocr(page) -> str:
