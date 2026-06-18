@@ -63,17 +63,56 @@ def extract_text_ocr(page) -> str:
     return text
 
 
+def fix_turkish_i_encoding(text: str) -> str:
+    """
+    Bazı PDF'lerde font eşleme (cmap) hatası nedeniyle Türkçe büyük 'İ'
+    (noktalı I) ve küçük 'i' harfleri, font'un bozuk Unicode haritası
+    yüzünden 'Ĝ' (G circumflex, U+011C - normalde Esperanto'da kullanılır,
+    Türkçe'de hiç yer almaz) olarak yanlış çıkabiliyor.
+
+    Bu durum aynı PDF içinde bazı bölümlerde (farklı kaynaktan/farklı
+    fontla eklenmiş metinlerde) görülüp diğerlerinde görülmeyebilir.
+
+    Düzeltme mantığı: kelimedeki diğer harflerin büyük/küçük durumuna
+    bakarak, Ĝ'nin büyük İ mi küçük i mi olması gerektiğine karar verilir.
+    """
+    if 'Ĝ' not in text:
+        return text  # bu bozukluk yoksa hiçbir şeye dokunma
+
+    def replace_in_word(match):
+        word = match.group(0)
+        other_letters = [c for c in word if c != 'Ĝ' and c.isalpha()]
+        is_all_upper = len(other_letters) > 0 and all(c.isupper() for c in other_letters)
+
+        result = []
+        for i, ch in enumerate(word):
+            if ch == 'Ĝ':
+                # Kelimenin tamamı büyük harfliyse veya bu Ĝ kelimenin ilk harfiyse -> büyük İ
+                if is_all_upper or i == 0:
+                    result.append('İ')
+                else:
+                    result.append('i')
+            else:
+                result.append(ch)
+        return "".join(result)
+
+    return re.sub(r'\S*Ĝ\S*', replace_in_word, text)
+
+
 def clean_extracted_text(raw_text: str) -> str:
     """
     Çıkarılan ham metni temizler:
+    - Bilinen font-eşleme hatalarını düzeltir (örn. Türkçe İ/i -> Ĝ hatası)
     - Fazla boşlukları/satır sonlarını düzenler
     - Kelimenin ortasında bölünmüş satırları birleştirir
     """
     if not raw_text:
         return ""
 
+    text = fix_turkish_i_encoding(raw_text)
+
     # Satır sonunda tire ile bölünmüş kelimeleri birleştir (örn: "kita-\nbı" -> "kitabı")
-    text = re.sub(r"-\n", "", raw_text)
+    text = re.sub(r"-\n", "", text)
 
     # Tek satır sonlarını boşlukla değiştir, ama çift satır sonunu (paragraf ayrımı) koru
     text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
